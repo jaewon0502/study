@@ -36,6 +36,7 @@ State Transitions
 The answer is the maximum value among all dp0 and dp1.
 
 
+```
 def max_subarray_sum_with_one_deletion(nums):
     dp0 = nums[0]          # no deletion
     dp1 = float('-inf')    # one deletion used
@@ -47,6 +48,7 @@ def max_subarray_sum_with_one_deletion(nums):
         answer = max(answer, dp0, dp1)
 
     return answer
+```
 
 What i learned
 
