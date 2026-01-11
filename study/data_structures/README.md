@@ -1,15 +1,17 @@
-# Data Structures
+# Data Structures Roadmap
 
-Use this folder for implementations, notes, and small tests.
+Organized study tracks with space for notes, implementations, and problems. Fill each subfolder as you learn; keep one concept per Markdown where possible.
 
-Suggested Markdown files:
-- `arrays.md`: prefix sums, sliding window, two pointers.
-- `trees.md`: traversals, LCA templates, segment/fenwick trees.
-- `graphs.md`: BFS/DFS patterns, shortest paths, connectivity.
-- `hashing.md`: collision handling, rolling hash snippets.
-- `misc.md`: queues, stacks, heaps, union-find, and amortized analysis notes.
+## Folders
+- `01_arrays_strings/`: Sliding window, two pointers, prefix/suffix tricks, string hashing.
+- `02_stack_queue/`: Stack-based monotonic patterns, queue simulations, deque usage.
+- `03_linked_list/`: Pointer manipulation, cycle detection, reversal patterns.
+- `04_hash_table/`: Collision strategies, custom hashing, frequency maps.
+- `05_heap_priority_queue/`: Heaps for scheduling, k-selection, lazy deletion.
+- `06_tree/`: Traversals, recursion patterns, BST, segment/fenwick trees.
+- `07_graph/`: BFS/DFS templates, shortest paths, connectivity, topological order.
 
-Tips:
-- Keep a small suite of example inputs/outputs with explanations.
-- Note invariants and typical pitfalls (off-by-one, indexing, overflow).
-- If you add Python implementations, name them alongside the notes (e.g., `segment_tree.py`).
+## Suggested usage
+- Add concise summaries in each `README.md` to remind yourself of go-to patterns.
+- Keep core code in `implementations/`, references and takeaways in `notes/`, and solved exercises in `problems/` with Markdown writeups and code.
+- Record edge cases and invariants alongside code; link problems to the patterns they use.
