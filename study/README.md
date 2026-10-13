@@ -4,7 +4,7 @@
 `study/data_structures/`: References and implementations for key data structures.  
 `study/ai-math-app/`: Lessons learned from building the Ai_Math_App iPad math tutor (2026-06/07).
 
-[Network Diagnostics](network-diagnostics/): Real-time local computer monitoring, DNS/TCP connection diagnostics, and educational TCP / GBN / SR graphs in Python.
+[Network Diagnostics](network-diagnostics/): Real-time device monitoring, actual TCP socket measurements, captured packet graphs, and DNS/TCP diagnostics in Python. Teaching simulations are available separately.
 
 ### Workflow
 - Keep each problem in its own Markdown file; drop a matching Python solution when needed.
