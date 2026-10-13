@@ -142,9 +142,13 @@ class CaptureTests(unittest.TestCase):
 
     @mock.patch.object(capture.socket, "if_nameindex", return_value=[(1, "en0")])
     def test_unknown_interface_and_missing_binary(self, interfaces):
-        self.assertEqual(capture.run_capture(capture.CaptureConfig("other"))["status"], "error")
+        unknown = capture.run_capture(capture.CaptureConfig("other"))
+        self.assertEqual(unknown["status"], "error")
+        self.assertEqual(unknown["stop_reason"], "error")
         with mock.patch.object(capture, "_tcpdump", return_value=None):
-            self.assertEqual(capture.run_capture(capture.CaptureConfig())["status"], "error")
+            missing = capture.run_capture(capture.CaptureConfig())
+            self.assertEqual(missing["status"], "error")
+            self.assertEqual(missing["stop_reason"], "error")
 
     def test_regular_file_and_size_limit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -159,6 +163,7 @@ class CaptureTests(unittest.TestCase):
         result = capture._collect([sys.executable, "-c", code], capture._result("test"),
                                   1, 10, None, None, live=True)
         self.assertEqual(result["status"], "error")
+        self.assertEqual(result["stop_reason"], "error")
         self.assertIn("권한", result["error"])
         self.assertNotIn("private_details", json.dumps(result))
 
@@ -171,10 +176,39 @@ class CaptureTests(unittest.TestCase):
         result = capture._collect([sys.executable, "-c", code], capture._result("test"),
                                   3, 10, None, rows.append, live=True)
         self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["stop_reason"], "end_of_file")
         self.assertEqual(len(rows), 1)
         self.assertEqual(result["dropped_packets"], 3)
         self.assertTrue(any("1줄" in item for item in result["warnings"]))
         self.assertNotIn("secret", json.dumps(result))
+
+    def test_collect_packet_limit_stops_producer(self):
+        code = f"import time; print({DATA!r}, flush=True); time.sleep(10)"
+        result = capture._collect([sys.executable, "-c", code], capture._result("test"),
+                                  5, 1, None, None, live=True)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["stop_reason"], "packet_limit")
+        self.assertEqual(len(result["packets"]), 1)
+        self.assertLess(result["duration_seconds"], 2)
+
+    def test_natural_count_exit_includes_unparseable_packets(self):
+        # tcpdump counts packets even when their headers are truncated. The
+        # child exits itself here, before the collector reaches its own limit.
+        code = (f"import sys; print({DATA!r}); print('[|tcp]'); "
+                "sys.stderr.write('2 packets captured\\n')")
+        result = capture._collect([sys.executable, "-c", code], capture._result("test"),
+                                  5, 2, None, None, live=True)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["stop_reason"], "packet_limit")
+        self.assertEqual(len(result["packets"]), 1)
+
+    def test_live_duration_is_normal_completion(self):
+        result = capture._collect([sys.executable, "-c", "import time; time.sleep(10)"],
+                                  capture._result("test"), 0.1, 10, None, None, live=True)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["stop_reason"], "duration_limit")
+        self.assertIsNone(result["error"])
+        self.assertLess(result["duration_seconds"], 2)
 
     def test_cancel_reaps_subprocess(self):
         event = threading.Event()
@@ -193,6 +227,7 @@ class CaptureTests(unittest.TestCase):
         finally:
             timer.cancel()
         self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["stop_reason"], "cancelled")
         self.assertIsNotNone(process_list[0].poll())
         self.assertTrue(process_list[0].stdout.closed)
         self.assertTrue(process_list[0].stderr.closed)
@@ -205,6 +240,7 @@ class CaptureTests(unittest.TestCase):
             result = capture._collect([], capture._result("test"), 1, 10, event, None, live=True)
         popen.assert_not_called()
         self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["stop_reason"], "cancelled")
 
     def test_callback_error_reaps_process(self):
         code = f"import time; print({SYN!r}, flush=True); time.sleep(10)"
@@ -213,6 +249,7 @@ class CaptureTests(unittest.TestCase):
         result = capture._collect([sys.executable, "-c", code], capture._result("test"),
                                   2, 10, None, failing_callback, live=True)
         self.assertEqual(result["status"], "error")
+        self.assertEqual(result["stop_reason"], "error")
         self.assertNotIn("private callback detail", json.dumps(result))
         self.assertLess(result["duration_seconds"], 2)
 
@@ -220,6 +257,7 @@ class CaptureTests(unittest.TestCase):
         result = capture._collect([sys.executable, "-c", "import time; time.sleep(10)"],
                                   capture._result("test"), 0.1, 10, None, None, live=False)
         self.assertEqual(result["status"], "error")
+        self.assertEqual(result["stop_reason"], "error")
         self.assertIn("처리 시간", result["error"])
         self.assertLess(result["duration_seconds"], 2)
 
@@ -232,10 +270,13 @@ class CaptureTests(unittest.TestCase):
                     write_fixture(path, pcapng=extension == "pcapng")
                     result = capture.read_capture(path)
                     self.assertEqual(result["status"], "complete", result)
+                    self.assertEqual(result["stop_reason"], "end_of_file")
                     self.assertEqual(len(result["packets"]), 1, result)
                     self.assertEqual(result["packets"][0]["src_ip"], "192.0.2.10")
                     self.assertEqual(result["packets"][0]["seq"], 100)
                     self.assertEqual(result["source"], "capture_file_tcp_metadata")
+                    limited = capture.read_capture(path, max_packets=1)
+                    self.assertEqual(limited["stop_reason"], "packet_limit")
 
 
 class FollowTests(unittest.TestCase):
@@ -246,6 +287,7 @@ class FollowTests(unittest.TestCase):
             path.write_text("bad\n" + json.dumps(record) + "\n", encoding="utf-8")
             result = capture.follow_metadata(path, max_packets=1)
         self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["stop_reason"], "packet_limit")
         self.assertEqual(result["source"], "live_tcp_metadata_file")
         self.assertNotIn("private", json.dumps(result))
         self.assertEqual(len(result["packets"]), 1)
@@ -268,6 +310,7 @@ class FollowTests(unittest.TestCase):
             finally:
                 timer.cancel()
         self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["stop_reason"], "cancelled")
         self.assertEqual(len(result["packets"]), 1)
         self.assertLess(result["duration_seconds"], 2)
 
@@ -277,17 +320,33 @@ class FollowTests(unittest.TestCase):
             path.write_bytes(b"x" * 10000 + b"\n{\"time\":")
             result = capture.follow_metadata(path, duration=1)
         self.assertEqual(result["packets"], [])
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["stop_reason"], "duration_limit")
         self.assertEqual(len(result["warnings"]), 2)
+
+    def test_full_log_replay_reaches_packet_limit_on_each_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "headers.jsonl"
+            record = json.dumps(capture.parse_tcpdump_line(DATA)) + "\n"
+            path.write_text(record * 2000, encoding="utf-8")
+            for _ in range(2):
+                result = capture.follow_metadata(path, duration=10)
+                self.assertEqual(result["stop_reason"], "packet_limit")
+                self.assertEqual(len(result["packets"]), 2000)
+                self.assertLess(result["duration_seconds"], 2)
 
     def test_follow_cancel_and_missing_file(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "headers.jsonl"
-            self.assertEqual(capture.follow_metadata(path)["status"], "error")
+            missing = capture.follow_metadata(path)
+            self.assertEqual(missing["status"], "error")
+            self.assertEqual(missing["stop_reason"], "error")
             path.touch()
             event = threading.Event()
             event.set()
             result = capture.follow_metadata(path, cancel_event=event)
         self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["stop_reason"], "cancelled")
         self.assertEqual(result["packets"], [])
 
 
