@@ -182,12 +182,14 @@ class _Lines:
 
 def _result(source):
     return {"source": source, "started_at": datetime.now(timezone.utc).isoformat(),
-            "status": "complete", "error": None, "packets": [], "warnings": [],
+            "status": "complete", "stop_reason": None, "error": None,
+            "packets": [], "warnings": [],
             "duration_seconds": 0.0, "dropped_packets": None}
 
 
 def _error(result, message):
     result["status"] = "error"
+    result["stop_reason"] = "error"
     result["error"] = message[:500]
     return result
 
@@ -253,6 +255,7 @@ def _collect(command, result, timeout, max_packets, cancel_event, on_packet, *, 
     try:
         if cancel_event is not None and cancel_event.is_set():
             result["status"] = "cancelled"
+            result["stop_reason"] = "cancelled"
             return result
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    stdin=subprocess.DEVNULL, bufsize=0,
@@ -269,8 +272,13 @@ def _collect(command, result, timeout, max_packets, cancel_event, on_packet, *, 
                 stopping = now
                 if cancelled:
                     result["status"] = "cancelled"
+                    result["stop_reason"] = "cancelled"
+                elif limit:
+                    result["stop_reason"] = "packet_limit"
                 elif timed_out and not live:
                     _error(result, "캡처 파일 처리 시간이 20초를 초과했습니다. 일부 메타데이터만 표시합니다.")
+                else:
+                    result["stop_reason"] = "duration_limit"
                 if process.poll() is None:
                     process.send_signal(signal.SIGINT)
             if stopping is not None and now - stopping >= 1.0 and process.poll() is None:
@@ -298,6 +306,13 @@ def _collect(command, result, timeout, max_packets, cancel_event, on_packet, *, 
             result["dropped_packets"] = int(dropped.group(1))
         if returncode != 0 and stopping is None:
             _error(result, _command_error(error_text, returncode))
+        if result["stop_reason"] is None:
+            captured = re.search(r"(?m)^\s*(\d+) packets? captured\s*$", error_text)
+            # tcpdump -c can exit before the loop observes the count limit; its
+            # footer also includes TCP packets whose metadata could not be parsed.
+            reached_limit = (len(result["packets"]) >= max_packets
+                             or captured is not None and int(captured.group(1)) >= max_packets)
+            result["stop_reason"] = "packet_limit" if reached_limit else "end_of_file"
         if killed:
             result["warnings"].append("tcpdump 응답이 늦어 프로세스를 종료했습니다.")
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -377,6 +392,7 @@ def follow_metadata(path, duration=60, max_packets=2000, cancel_event=None, on_p
             while time.monotonic() - started < duration:
                 if cancel_event is not None and cancel_event.is_set():
                     result["status"] = "cancelled"
+                    result["stop_reason"] = "cancelled"
                     break
                 details = os.fstat(handle.fileno())
                 current_path = resolved.stat()
@@ -395,6 +411,7 @@ def follow_metadata(path, duration=60, max_packets=2000, cancel_event=None, on_p
                         continue
                     _append(result, packet, on_packet)
                     if len(result["packets"]) >= max_packets:
+                        result["stop_reason"] = "packet_limit"
                         result["warnings"].append(f"최대 {max_packets}개의 TCP 메타데이터만 표시합니다.")
                         return result
                 if not chunk:
@@ -402,6 +419,8 @@ def follow_metadata(path, duration=60, max_packets=2000, cancel_event=None, on_p
                         cancel_event.wait(0.05)
                     else:
                         time.sleep(0.05)
+            if result["stop_reason"] is None:
+                result["stop_reason"] = "duration_limit"
     except (OSError, TypeError, ValueError):
         _error(result, "메타데이터 파일을 읽을 수 없습니다. 100 MiB 이하의 일반 JSONL 파일인지 확인하세요.")
     except Exception:

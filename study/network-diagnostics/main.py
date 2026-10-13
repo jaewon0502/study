@@ -91,7 +91,8 @@ def export_observed(result, destination, kind='socket', flow_id=None):
 class Lab:
     def __init__(self, config, start_view='live'):
         import matplotlib.pyplot as plt
-        from matplotlib.widgets import Button, Slider, TextBox
+        from matplotlib.widgets import Button, Slider
+        from ui_widgets import ResponsiveTextBox as TextBox
         from plots import configure_style, BG, INK, MUTED, BLUE, TEAL
         configure_style()
         self.plt=plt
@@ -412,7 +413,8 @@ class Lab:
             if future is None: continue
             result=getattr(self,kind+'_result');changed=False
             queue=getattr(self,kind+'_queue')
-            while True:
+            # Yield to native input events even when a capture arrives in a burst.
+            for _ in range(128):
                 try: row=queue.get_nowait()
                 except Empty: break
                 result[key].append(row);changed=True
@@ -421,13 +423,16 @@ class Lab:
                 except Exception as error:
                     result['status']='error';result['error']=str(error)
                 setattr(self,kind+'_future',None)
+                setattr(self,kind+'_queue',Queue())
                 changed=True;finished=True
             if changed and self.view in views: redraw=True
         if finished:
             self.update_widget_activity()
         self.observed_dirty=self.observed_dirty or redraw
         if self.observed_dirty and self.view in ('socket','capture','packet') and (finished or time.monotonic()>=self.observed_next_draw):
-            self.observed_next_draw=time.monotonic()+.5
+            # Collection keeps its original cadence; paint at most once a second
+            # so input events get time between expensive native canvas renders.
+            self.observed_next_draw=time.monotonic()+1
             self.observed_dirty=False
             self.draw_observed()
 
@@ -443,7 +448,7 @@ class Lab:
             title='실제 TCP 연결의 내부 상태를 관측합니다.' if is_socket else '수집된 TCP 패킷으로 흐름을 확인합니다.'
             body=('01   측정 시작을 누르면 기기 내부에 실제 TCP 연결을 만듭니다.\n\n'
                   '02   전송 중 OS에서 cwnd · 윈도우 · RTT · 재전송 수를 읽습니다.\n\n'
-                  '03   약 0.25초마다 얻은 측정값을 그래프로 표시합니다.') if is_socket else (
+                  '03   약 0.25초마다 측정하고, 그래프는 1초 간격으로 갱신합니다.') if is_socket else (
                   '01   인터페이스를 선택하고 수집 시작을 누릅니다.\n\n'
                   '02   권한이 필요한 Mac에서는 macOS_패킷_수집.command를 실행합니다.\n\n'
                   '03   파일 읽기 / 따라가기를 누르면 JSONL이 실시간 반영됩니다.\n\n'
@@ -468,7 +473,20 @@ class Lab:
             count=len(result.get('samples' if is_socket else 'packets',[]))
             state='측정 중' if running else {'completed':'측정 완료','complete':'수집 완료','cancelled':'중단됨','error':'실행 실패'}.get(result.get('status'),'수집 종료')
             error=result.get('error')
-            self.status.set_text(f'{state} · {count}개 '+('표본' if is_socket else '패킷')+(f' · {error}' if error else ''))
+            detail=''
+            if not is_socket and not running and not error:
+                reason=result.get('stop_reason')
+                if reason=='packet_limit':
+                    detail=' · 패킷 수 제한 도달'
+                elif reason=='duration_limit':
+                    detail=' · 설정한 읽기 시간 종료'
+                elif reason=='end_of_file':
+                    detail=' · 파일 끝까지 읽음'
+                if result.get('source')=='live_tcp_metadata_file' and reason=='packet_limit':
+                    self.help_text.set_text('수집 파일의 제한에 도달했습니다.\n새 패킷을 보려면 수집 터미널을\n다시 실행한 뒤 파일을 읽으세요.')
+                elif result.get('source')=='live_tcp_metadata_file' and reason=='duration_limit':
+                    self.help_text.set_text('파일 읽기 시간이 끝났습니다.\n다시 누르면 파일 처음부터 읽습니다.\n터미널 수집은 별도로 확인하세요.')
+            self.status.set_text(f'{state} · {count}개 '+('표본' if is_socket else '패킷')+detail+(f' · {error}' if error else ''))
         self.socket_run_button.label.set_text('측정 중…' if self.socket_future else '측정 시작')
         self.capture_run_button.label.set_text('수집 중…' if self.capture_future else '수집 시작')
         self.fig.canvas.draw_idle()
@@ -482,7 +500,7 @@ class Lab:
                              ('capture',self.view in ('capture','packet'))]:
             running=getattr(self,kind+'_future') is not None
             for field in getattr(self,kind+'_inputs').values():
-                if not visible: field.stop_typing()
+                if not visible and field.capturekeystrokes: field.stop_typing()
                 field.set_active(visible and not running)
             getattr(self,kind+'_run_button').set_active(visible and not running)
             getattr(self,kind+'_cancel_button').set_active(visible and running)
